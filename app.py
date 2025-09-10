@@ -1,20 +1,18 @@
 # app.py
 # -*- coding: utf-8 -*-
 """
-Stock Market Visualizer - 完整版
+Stock Market Visualizer - 完整修正版
+修复 BB_Upper 多列报错
 功能：
-1. 股票数据抓取（yfinance，缓存+重试）
-2. 技术指标计算：MA、RSI、布林带
-3. K线图 + 技术指标绘制（Plotly）
-4. 投资组合上传 & 估值
-5. 多票对比 & 相关性分析
-6. 图表导出 PNG/HTML
-7. 配置保存/加载
-8. 界面中文注释 + 技术指标说明
+1. 股票数据抓取（单票/多票）
+2. 技术指标计算（MA, RSI, Bollinger Bands）
+3. K线图 + 技术指标 Plotly 绘制
+4. 投资组合上传/估值
+5. 图表导出 PNG/HTML
+6. 界面中文注释 + 技术指标说明
 """
 
 import io
-import json
 import time
 from typing import List, Dict
 
@@ -38,9 +36,7 @@ st.markdown("说明：使用 `yfinance` 获取股票数据，并可视化 K 线�
 # -------------------------
 @st.cache_data(ttl=900)
 def fetch_data_single(ticker: str, period: str = "6mo", interval: str = "1d", retries: int = 3) -> pd.DataFrame:
-    """
-    获取单票股票历史数据
-    """
+    """获取单票股票历史数据"""
     ticker = ticker.strip().upper()
     last_exc = None
     for attempt in range(retries):
@@ -59,14 +55,11 @@ def fetch_data_single(ticker: str, period: str = "6mo", interval: str = "1d", re
 
 @st.cache_data(ttl=900)
 def fetch_data_batch(tickers: List[str], period: str = "6mo", interval: str = "1d") -> Dict[str, pd.DataFrame]:
-    """
-    批量获取多票数据
-    """
+    """批量获取多票数据"""
     tickers = [t.strip().upper() for t in tickers if t.strip()]
     result = {t: pd.DataFrame() for t in tickers}
     if not tickers:
         return result
-
     try:
         raw = yf.download(tickers, period=period, interval=interval, group_by="ticker", threads=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
@@ -87,25 +80,36 @@ def fetch_data_batch(tickers: List[str], period: str = "6mo", interval: str = "1
     return result
 
 # -------------------------
-# 技术指标计算
+# 技术指标计算函数
 # -------------------------
 def calculate_technical_indicators(df: pd.DataFrame, ma_windows=[20,50], rsi_period=14, bb_window=20, bb_std=2.0) -> pd.DataFrame:
+    """
+    计算 MA、RSI、Bollinger Bands
+    修复多列报错，确保 df 是单票 DataFrame
+    """
     if df.empty:
         return df
-    if 'Adj Close' in df.columns:
-        close = df['Adj Close'].copy()
-    elif 'Close' in df.columns:
-        close = df['Close'].copy()
-    else:
+
+    # 如果 df 是 MultiIndex 列，先取 Close 或 Adj Close 单列
+    if isinstance(df.columns, pd.MultiIndex):
+        if 'Adj Close' in df.columns.get_level_values(0):
+            df_single = df['Adj Close'].copy()
+        else:
+            df_single = df['Close'].copy()
+        df = df_single.to_frame('Close')
+    elif 'Adj Close' in df.columns:
+        df['Close'] = df['Adj Close']
+    elif 'Close' not in df.columns:
         return df
 
     df = df.sort_index()
+    close = df['Close']
 
-    # 计算移动均线
+    # 移动均线
     for w in ma_windows:
         df[f'MA{w}'] = close.rolling(window=w, min_periods=1).mean()
 
-    # 布林带
+    # Bollinger Bands
     df['BB_Mid'] = close.rolling(window=bb_window, min_periods=1).mean()
     std = close.rolling(window=bb_window, min_periods=1).std(ddof=0)
     df['BB_Upper'] = df['BB_Mid'] + bb_std * std
@@ -120,11 +124,10 @@ def calculate_technical_indicators(df: pd.DataFrame, ma_windows=[20,50], rsi_per
     rs = avg_gain / avg_loss.replace(0,np.nan)
     df['RSI'] = 100 - (100 / (1 + rs))
     df['RSI'] = df['RSI'].fillna(0)
-
     return df
 
 # -------------------------
-# 绘图函数
+# K线图绘制函数
 # -------------------------
 def make_candlestick_figure(df: pd.DataFrame, ma_windows=[20,50], show_rsi=True, show_bb=True, colors=None, rsi_thresholds=None):
     if df.empty:
@@ -193,7 +196,7 @@ def portfolio_value(port_df: pd.DataFrame, price_map: Dict[str,float]) -> (pd.Da
     return df, total
 
 # -------------------------
-# 侧边栏参数设置
+# 侧边栏参数
 # -------------------------
 st.sidebar.header("参数设置")
 ticker_input = st.sidebar.text_input("股票代码（逗号分隔）", value="AAPL")
