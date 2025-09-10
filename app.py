@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Stock Market Visualizer - 完整修正版
-修复 BB_Upper 多列报错
 功能：
 1. 股票数据抓取（单票/多票）
 2. 技术指标计算（MA, RSI, Bollinger Bands）
@@ -93,10 +92,15 @@ def calculate_technical_indicators(df: pd.DataFrame, ma_windows=[20,50], rsi_per
     # 如果 df 是 MultiIndex 列，先取 Close 或 Adj Close 单列
     if isinstance(df.columns, pd.MultiIndex):
         if 'Adj Close' in df.columns.get_level_values(0):
-            df_single = df['Adj Close'].copy()
+            df_single = df['Adj Close']
         else:
-            df_single = df['Close'].copy()
-        df = df_single.to_frame('Close')
+            df_single = df['Close']
+        # 保证 df_single 是 DataFrame
+        if isinstance(df_single, pd.Series):
+            df = df_single.to_frame('Close')
+        else:
+            df = df_single.copy()
+            df.columns = ['Close']
     elif 'Adj Close' in df.columns:
         df['Close'] = df['Adj Close']
     elif 'Close' not in df.columns:
