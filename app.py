@@ -1,14 +1,14 @@
 # app.py
 # -*- coding: utf-8 -*-
 """
-Stock Market Visualizer - 完整修正版
+Stock Market Visualizer - 完整版
 功能：
-1. 股票数据抓取（单票/多票）
-2. 技术指标计算（MA, RSI, Bollinger Bands）
-3. K线图 + 技术指标 Plotly 绘制
+1. 单票/多票股票数据抓取
+2. 技术指标计算 (MA, RSI, Bollinger Bands)
+3. K线图 + 技术指标 Plotly 可视化
 4. 投资组合上传/估值
-5. 图表导出 PNG/HTML
-6. 界面中文注释 + 技术指标说明
+5. 图表导出 PNG / HTML
+6. 中文注释 + 技术指标说明
 """
 
 import io
@@ -44,6 +44,12 @@ def fetch_data_single(ticker: str, period: str = "6mo", interval: str = "1d", re
             if df.empty:
                 continue
             df.index = df.index.tz_localize(None)
+            # 确保必需列存在
+            if 'Close' not in df.columns and 'Adj Close' in df.columns:
+                df['Close'] = df['Adj Close']
+            for col in ['Open','High','Low']:
+                if col not in df.columns:
+                    df[col] = df['Close']  # 临时填充
             return df
         except Exception as e:
             last_exc = e
@@ -66,6 +72,12 @@ def fetch_data_batch(tickers: List[str], period: str = "6mo", interval: str = "1
                 if t in raw.columns.levels[0]:
                     df_t = raw[t].copy()
                     df_t.index = df_t.index.tz_localize(None)
+                    for col in ['Close','Open','High','Low']:
+                        if col not in df_t.columns:
+                            if col == 'Close' and 'Adj Close' in df_t.columns:
+                                df_t['Close'] = df_t['Adj Close']
+                            else:
+                                df_t[col] = df_t['Close']
                     result[t] = df_t
         else:
             for t in tickers:
@@ -82,10 +94,7 @@ def fetch_data_batch(tickers: List[str], period: str = "6mo", interval: str = "1
 # 技术指标计算函数
 # -------------------------
 def calculate_technical_indicators(df: pd.DataFrame, ma_windows=[20,50], rsi_period=14, bb_window=20, bb_std=2.0) -> pd.DataFrame:
-    """
-    计算 MA、RSI、Bollinger Bands
-    修复多列报错，确保 df 是单票 DataFrame
-    """
+    """计算 MA、RSI、Bollinger Bands"""
     if df.empty:
         return df
 
@@ -101,7 +110,7 @@ def calculate_technical_indicators(df: pd.DataFrame, ma_windows=[20,50], rsi_per
         else:
             df = df_single.copy()
             df.columns = ['Close']
-    elif 'Adj Close' in df.columns:
+    elif 'Adj Close' in df.columns and 'Close' not in df.columns:
         df['Close'] = df['Adj Close']
     elif 'Close' not in df.columns:
         return df
@@ -233,6 +242,9 @@ with col_main:
         t = tickers[0]
         try:
             df = fetch_data_single(t, period, interval)
+            if df.empty:
+                st.error("获取股票数据为空，请检查股票代码或时间间隔")
+                st.stop()
             df = calculate_technical_indicators(df, ma_windows=ma_windows, bb_window=bb_window, bb_std=bb_std)
             fig = make_candlestick_figure(df, ma_windows=ma_windows, show_rsi=show_rsi, show_bb=show_bb,
                                           colors={"up":color_up,"down":color_down},
@@ -250,43 +262,49 @@ with col_main:
 with col_side:
     st.subheader("技术指标说明")
     st.markdown("""
-    **移动均线 (MA)**：用于观察趋势变化，短期均线穿越长期均线可能为买入/卖出信号。  
-    **RSI (相对强弱指数)**：0-100，通常>70为超买，<30为超卖，用于判断价格反转可能。  
-    **布林带 (Bollinger Bands)**：上轨/下轨包络价格，价格接触上轨可能回落，接触下轨可能反弹。  
+    **移动均线 (MA)**：用于观察趋势变化，短期均线穿越长期均线可能为买入/卖出信号  
+    **RSI (相对强弱指标)**：通常 70 以上超买，30 以下超卖  
+    **布林带 (Bollinger Bands)**：股价上穿/下穿上下轨可能为反转信号
     """)
 
 # -------------------------
 # 投资组合上传
 # -------------------------
-st.sidebar.header("投资组合分析")
-uploaded_file = st.sidebar.file_uploader("上传 CSV/XLS/XLSX 投资组合", type=["csv","xls","xlsx"])
-if uploaded_file:
+st.sidebar.header("投资组合上传")
+uploaded_file = st.sidebar.file_uploader("上传 CSV/XLS/XLSX 文件", type=['csv','xls','xlsx'])
+if uploaded_file is not None:
     try:
         port_df = parse_portfolio_file(uploaded_file.read(), uploaded_file.name)
-        price_map = {t: fetch_data_single(t, "1d", "1d")['Close'][-1] for t in port_df['ticker']}
-        port_df_val, total_val = portfolio_value(port_df, price_map)
-        st.sidebar.subheader("投资组合估值")
-        st.sidebar.dataframe(port_df_val)
-        st.sidebar.metric("总市值", f"{total_val:.2f}")
+        st.sidebar.success("文件解析成功")
+        price_map = {}
+        for t in port_df['ticker'].unique():
+            df_tmp = fetch_data_single(t, period='1d', interval='1d')
+            if not df_tmp.empty:
+                price_map[t] = df_tmp['Close'].iloc[-1]
+            else:
+                price_map[t] = np.nan
+        port_df, total_value = portfolio_value(port_df, price_map)
+        st.sidebar.metric("投资组合总价值", f"{total_value:.2f}")
+        st.dataframe(port_df)
     except Exception as e:
         st.sidebar.error(f"解析投资组合失败: {e}")
 
 # -------------------------
 # 图表导出
 # -------------------------
-st.sidebar.header("图表导出")
-export_png = st.sidebar.button("导出 PNG")
-export_html = st.sidebar.button("导出 HTML")
-if 'fig' in locals() and fig:
-    if export_png:
+if st.button("导出图表为 PNG"):
+    if 'fig' in locals() and fig:
         try:
             pio.write_image(fig, "chart.png")
-            st.sidebar.success("已导出 chart.png")
+            st.success("已导出 chart.png")
         except Exception as e:
-            st.sidebar.error(f"PNG 导出失败: {e}")
-    if export_html:
+            st.error(f"导出 PNG 失败: {e}. 可尝试安装 kaleido 或导出 HTML")
+
+if st.button("导出图表为 HTML"):
+    if 'fig' in locals() and fig:
         try:
             fig.write_html("chart.html")
-            st.sidebar.success("已导出 chart.html")
+            st.success("已导出 chart.html")
         except Exception as e:
-            st.sidebar.error(f"HTML 导出失败: {e}")
+            st.error(f"导出 HTML 失败: {e}")
+
